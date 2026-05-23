@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>搜索结果 - 漫画阅读器</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- Top search bar -->
+<div class="search-bar">
+  <a href="/" class="back-link">← 首页</a>
+  <div class="search-bar-input">
+    <input type="text" id="searchInput" placeholder="搜索漫画...">
+    <button onclick="doSearch()">搜索</button>
+  </div>
+</div>
+
+<div class="catalog-container">
+
+  <!-- Loading -->
+  <div id="loading" class="loading">
+    <div class="spinner"></div>
+    <p>正在搜索...</p>
+  </div>
+
+  <!-- Error -->
+  <div id="error" class="error-card hidden"></div>
+
+  <!-- Search results -->
+  <div id="resultsSection" class="hidden">
+    <h2 id="resultsTitle" class="section-title"></h2>
+    <div id="resultsGrid" class="results-grid"></div>
+  </div>
+
+  <!-- Chapter list (shown after clicking a comic) -->
+  <div id="chapterSection" class="hidden">
+    <div class="comic-info">
+      <img id="comicCover" class="comic-cover" src="" alt="">
+      <div class="comic-meta">
+        <h2 id="comicTitle"></h2>
+        <p id="comicAuthor"></p>
+        <!-- Source switcher -->
+        <div class="source-switcher">
+          <span class="source-label">线路：</span>
+          <div id="sourceTabs" class="source-tabs"></div>
+        </div>
+      </div>
+    </div>
+    <div id="chapterGrid" class="chapter-grid"></div>
+  </div>
+
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────
+let searchResults = [];
+let currentComic = null;
+let currentSource = null;
+
+// ── Init ───────────────────────────────────────────────────────────
+(function init() {
+  const params = new URLSearchParams(location.search);
+  const q = params.get('q') || sessionStorage.getItem('searchKeyword') || '';
+  if (q) {
+    document.getElementById('searchInput').value = q;
+    searchComic(q);
+  } else {
+    document.getElementById('loading').classList.add('hidden');
+  }
+})();
+
+// ── Search ─────────────────────────────────────────────────────────
+function doSearch() {
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) return;
+  sessionStorage.setItem('searchKeyword', q);
+  // Update URL without reload
+  history.replaceState(null, '', '/catalog?q=' + encodeURIComponent(q));
+  // Show results, hide chapters
+  document.getElementById('chapterSection').classList.add('hidden');
+  document.getElementById('resultsSection').classList.add('hidden');
+  searchComic(q);
+}
+
+async function searchComic(keyword) {
+  const loading = document.getElementById('loading');
+  const error = document.getElementById('error');
+  loading.classList.remove('hidden');
+  error.classList.add('hidden');
+
+  try {
+    const resp = await fetch('/api/search?q=' + encodeURIComponent(keyword));
+    const data = await resp.json();
+    loading.classList.add('hidden');
+
+    if (data.error) {
+      error.textContent = data.error;
+      error.classList.remove('hidden');
+      return;
+    }
+
+    searchResults = data.results || [];
+    showResults(keyword, searchResults);
+  } catch (e) {
+    loading.classList.add('hidden');
+    error.textContent = '搜索失败，请检查网络';
+    error.classList.remove('hidden');
+  }
+}
+
+function showResults(keyword, results) {
+  const section = document.getElementById('resultsSection');
+  const grid = document.getElementById('resultsGrid');
+  const title = document.getElementById('resultsTitle');
+
+  title.textContent = `搜索 "${keyword}" — 找到 ${results.length} 个结果`;
+
+  if (results.length === 0) {
+    grid.innerHTML = '<p class="empty-hint">未找到结果，试试其他关键词</p>';
+    section.classList.remove('hidden');
+    return;
+  }
+
+  grid.innerHTML = results.map((r, i) => `
+    <div class="result-card" onclick="selectComic(${i})">
+      <div class="result-cover">
+        <img src="${esc(r.cover)}" alt="${esc(r.title)}" loading="lazy"
+             onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 120 160%22><rect fill=%22%23242424%22 width=%22120%22 height=%22160%22/><text x=%2260%22 y=%2280%22 fill=%22%23666%22 text-anchor=%22middle%22 font-size=%2214%22>无封面</text></svg>'">
+      </div>
+      <div class="result-info">
+        <h3 class="result-title">${esc(r.title)}</h3>
+        ${r.author ? '<p class="result-author">' + esc(r.author) + '</p>' : ''}
+        <span class="result-source source-${r.source}">${r.source}</span>
+      </div>
+    </div>
+  `).join('');
+
+  section.classList.remove('hidden');
+}
+
+// ── Select comic → load chapters ───────────────────────────────────
+async function selectComic(index) {
+  const comic = searchResults[index];
+  if (!comic) return;
+
+  currentComic = comic;
+  currentSource = comic.source;
+
+  // Show chapter section, hide results
+  document.getElementById('resultsSection').classList.add('hidden');
+  document.getElementById('chapterSection').classList.remove('hidden');
+  document.getElementById('loading').classList.remove('hidden');
+  document.getElementById('error').classList.add('hidden');
+
+  // Search other sources for the same title (for source switching)
+  const otherResults = searchResults.filter(r => r.source !== comic.source);
+  buildSourceTabs(comic, otherResults);
+
+  await loadChapters(comic.url, comic.title);
+}
+
+function buildSourceTabs(comic, others) {
+  const tabs = document.getElementById('sourceTabs');
+  // Group by source, deduplicate
+  const sources = [{source: comic.source, url: comic.url, title: comic.title}];
+  const seen = new Set([comic.source]);
+  for (const r of others) {
+    if (!seen.has(r.source)) {
+      seen.add(r.source);
+      sources.push({source: r.source, url: r.url, title: r.title});
+    }
+  }
+
+  tabs.innerHTML = sources.map(s =>
+    `<button class="source-tab ${s.source === currentSource ? 'active' : ''}"
+             data-source="${s.source}" data-url="${esc(s.url)}"
+             onclick="switchSource(this)">
+       ${s.source}
+     </button>`
+  ).join('');
+}
+
+async function switchSource(btn) {
+  const source = btn.dataset.source;
+  const url = btn.dataset.url;
+  if (source === currentSource) return;
+
+  currentSource = source;
+
+  // Update active tab
+  document.querySelectorAll('.source-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+
+  document.getElementById('loading').classList.remove('hidden');
+  document.getElementById('error').classList.add('hidden');
+
+  await loadChapters(url, btn.textContent.trim());
+}
+
+async function loadChapters(url, label) {
+  try {
+    const resp = await fetch('/api/chapters?url=' + encodeURIComponent(url));
+    const data = await resp.json();
+    document.getElementById('loading').classList.add('hidden');
+
+    if (data.error) {
+      document.getElementById('error').textContent = data.error;
+      document.getElementById('error').classList.remove('hidden');
+      return;
+    }
+
+    currentComic = {...currentComic, ...data};
+    showChapters(data);
+  } catch (e) {
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('error').textContent = '获取章节失败';
+    document.getElementById('error').classList.remove('hidden');
+  }
+}
+
+function showChapters(data) {
+  document.getElementById('comicTitle').textContent = data.title || '未知';
+  document.getElementById('comicAuthor').textContent = data.author ? '作者: ' + data.author : '';
+  const cover = document.getElementById('comicCover');
+  if (data.cover) {
+    cover.src = data.cover;
+    cover.style.display = '';
+  } else {
+    cover.style.display = 'none';
+  }
+
+  const grid = document.getElementById('chapterGrid');
+  const chapters = data.chapters || [];
+
+  if (chapters.length === 0) {
+    grid.innerHTML = '<p class="empty-hint">未找到章节</p>';
+    return;
+  }
+
+  grid.innerHTML = chapters.map(ch =>
+    `<a class="chapter-item" href="javascript:void(0)"
+        onclick="readChapter('${esc(ch.url)}')">
+       ${esc(ch.title)}
+     </a>`
+  ).join('');
+}
+
+// ── Read chapter ───────────────────────────────────────────────────
+async function readChapter(url) {
+  const chapters = (currentComic && currentComic.chapters) || [];
+  const idx = chapters.findIndex(ch => ch.url === url);
+  const keyword = document.getElementById('searchInput').value.trim();
+
+  sessionStorage.setItem('chapterContext', JSON.stringify({
+    comic: currentComic,
+    source: currentSource,
+    keyword,
+    chapters,
+    currentIndex: idx,
+  }));
+
+  try {
+    const resp = await fetch('/fetch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url}),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+    sessionStorage.setItem('comicData', JSON.stringify(data));
+    window.location.href = '/reader';
+  } catch (e) {
+    alert('加载失败');
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+document.getElementById('searchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doSearch();
+});
+</script>
+
+</body>
+</html>

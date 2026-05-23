@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title id="pageTitle">漫画阅读器</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="reader-body">
+
+<!-- Top Bar -->
+<div id="topBar" class="top-bar">
+  <button onclick="goBack()" class="btn-icon" title="返回" id="backBtn">← 返回</button>
+  <span id="titleDisplay" class="title-text">加载中...</span>
+  <span id="pageInfo" class="page-info">0 / 0</span>
+</div>
+
+<!-- Reader Area -->
+<div id="readerContainer" class="reader-container">
+  <div class="reader-placeholder" id="placeholder">
+    <p>正在加载漫画内容...</p>
+    <div class="spinner"></div>
+  </div>
+</div>
+
+<!-- Bottom Nav -->
+<div id="bottomNav" class="bottom-nav hidden">
+  <button id="prevBtn" onclick="navigateChapter('prev')" class="nav-btn" disabled>
+    ← 上一章
+  </button>
+  <div class="page-controls">
+    <button onclick="prevPage()" class="page-btn">←</button>
+    <span id="pageCounter">1 / 1</span>
+    <button onclick="nextPage()" class="page-btn">→</button>
+  </div>
+  <button id="nextBtn" onclick="navigateChapter('next')" class="nav-btn" disabled>
+    下一章 →
+  </button>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────
+let comicData = null;
+let currentPage = 0;
+let totalPages = 0;
+let images = [];
+let preloaded = {};
+let preloadProgress = 0;
+let chapterList = [];
+let chapterIndex = -1;
+
+// ── Init ───────────────────────────────────────────────────────────
+(function init() {
+  const raw = sessionStorage.getItem('comicData');
+  if (!raw) {
+    document.getElementById('placeholder').innerHTML =
+      '<p>没有漫画数据，<a href="/">返回首页输入网址</a></p>';
+    return;
+  }
+
+  try {
+    comicData = JSON.parse(raw);
+  } catch (e) {
+    document.getElementById('placeholder').innerHTML =
+      '<p>数据错误，<a href="/">返回首页</a></p>';
+    return;
+  }
+
+  images = comicData.images || [];
+  totalPages = images.length;
+  document.getElementById('pageTitle').textContent = comicData.title || '漫画阅读';
+  document.getElementById('titleDisplay').textContent = truncateTitle(comicData.title || '漫画阅读');
+  document.getElementById('bottomNav').classList.remove('hidden');
+
+  // Load chapter list from catalog context
+  try {
+    const ctx = JSON.parse(sessionStorage.getItem('chapterContext') || '{}');
+    if (ctx.chapters && ctx.chapters.length > 0) {
+      chapterList = ctx.chapters;
+      chapterIndex = ctx.currentIndex >= 0 ? ctx.currentIndex : -1;
+    }
+  } catch (e) {}
+
+  // If no chapter list from catalog, try building from nav links
+  if (chapterList.length === 0 && comicData.nav) {
+    if (comicData.nav.prev) {
+      document.getElementById('prevBtn').disabled = false;
+      document.getElementById('prevBtn').dataset.url = comicData.nav.prev;
+    }
+    if (comicData.nav.next) {
+      document.getElementById('nextBtn').disabled = false;
+      document.getElementById('nextBtn').dataset.url = comicData.nav.next;
+    }
+  }
+
+  // Enable/disable chapter nav buttons based on chapter list
+  updateChapterNav();
+
+  loadPage(0);
+  preloadAllImages();
+})()
+
+// ── Core ───────────────────────────────────────────────────────────
+function loadPage(index) {
+  if (index < 0 || index >= totalPages) return;
+  currentPage = index;
+
+  const container = document.getElementById('readerContainer');
+  const primary = images[index];
+
+  // Wrap in a centered div
+  const wrapper = document.createElement('div');
+  wrapper.className = 'page-wrapper';
+
+  // Build image URL (use proxy to avoid hotlink blocking)
+  const proxyUrl = '/proxy-image?url=' + encodeURIComponent(primary) +
+                   '&ref=' + encodeURIComponent(comicData.url);
+
+  const img = document.createElement('img');
+  img.className = 'comic-page';
+  img.src = proxyUrl;
+  img.alt = '第 ' + (index + 1) + ' 页';
+  img.loading = 'eager';
+  img.draggable = false;
+
+  // Loading state
+  const loadingDiv = document.createElement('div');
+  loadingDiv.className = 'page-loading';
+  loadingDiv.innerHTML = '<div class="spinner"></div><p>加载中...</p>';
+
+  wrapper.appendChild(loadingDiv);
+  wrapper.appendChild(img);
+
+  // Hide loader when image loads
+  img.onload = () => {
+    loadingDiv.remove();
+    img.classList.add('loaded');
+    updatePageInfo();
+  };
+  img.onerror = () => {
+    loadingDiv.innerHTML = '<p>加载失败</p>';
+  };
+
+  container.innerHTML = '';
+  container.appendChild(wrapper);
+
+  updatePageInfo();
+}
+
+function preloadAllImages() {
+  preloadProgress = 0;
+  let loaded = 0;
+  const total = images.length;
+  if (total === 0) return;
+
+  const pageInfo = document.getElementById('pageInfo');
+
+  for (let i = 0; i < total; i++) {
+    if (preloaded[i]) { loaded++; continue; }
+    const img = new Image();
+    const url = '/proxy-image?url=' + encodeURIComponent(images[i]) +
+                '&ref=' + encodeURIComponent(comicData.url);
+    img.onload = img.onerror = () => {
+      loaded++;
+      preloaded[i] = true;
+      preloadProgress = loaded;
+      if (loaded < total) {
+        pageInfo.textContent = '缓存 ' + loaded + '/' + total;
+      } else {
+        updatePageInfo();
+      }
+    };
+    img.src = url;
+  }
+}
+
+function updatePageInfo() {
+  document.getElementById('pageInfo').textContent =
+    (currentPage + 1) + ' / ' + totalPages;
+  document.getElementById('pageCounter').textContent =
+    (currentPage + 1) + ' / ' + totalPages;
+}
+
+// ── Navigation ─────────────────────────────────────────────────────
+function prevPage() {
+  if (currentPage > 0) loadPage(currentPage - 1);
+}
+
+function nextPage() {
+  if (currentPage < totalPages - 1) loadPage(currentPage + 1);
+}
+
+function updateChapterNav() {
+  const prevBtn = document.getElementById('prevBtn');
+  const nextBtn = document.getElementById('nextBtn');
+  if (chapterList.length > 0 && chapterIndex >= 0) {
+    prevBtn.disabled = chapterIndex <= 0;
+    nextBtn.disabled = chapterIndex >= chapterList.length - 1;
+  }
+}
+
+function navigateChapter(dir) {
+  if (chapterList.length > 0 && chapterIndex >= 0) {
+    const newIdx = dir === 'prev' ? chapterIndex - 1 : chapterIndex + 1;
+    if (newIdx < 0 || newIdx >= chapterList.length) return;
+    chapterIndex = newIdx;
+    loadNewUrl(chapterList[newIdx].url);
+  } else {
+    const btn = document.getElementById(dir + 'Btn');
+    const url = btn.dataset.url;
+    if (!url) return;
+    loadNewUrl(url);
+  }
+}
+
+async function loadNewUrl(url) {
+  const container = document.getElementById('readerContainer');
+  container.innerHTML = '<div class="reader-placeholder"><div class="spinner"></div><p>加载章节...</p></div>';
+
+  // Update chapter context so init() picks up the new index after reload
+  try {
+    const ctx = JSON.parse(sessionStorage.getItem('chapterContext') || '{}');
+    ctx.currentIndex = chapterIndex;
+    sessionStorage.setItem('chapterContext', JSON.stringify(ctx));
+  } catch (e) {}
+
+  try {
+    const resp = await fetch('/fetch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url}),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      container.innerHTML = '<p style="color:var(--error);text-align:center;padding:2rem;">' + data.error + '</p>';
+      return;
+    }
+    sessionStorage.setItem('comicData', JSON.stringify(data));
+    location.reload();
+  } catch (e) {
+    container.innerHTML = '<p style="color:var(--error);text-align:center;padding:2rem;">请求失败</p>';
+  }
+}
+
+function goBack() {
+  const ctx = sessionStorage.getItem('chapterContext');
+  if (ctx) {
+    const {keyword} = JSON.parse(ctx);
+    window.location.href = '/catalog?q=' + encodeURIComponent(keyword || '');
+  } else {
+    window.location.href = '/';
+  }
+}
+
+function truncateTitle(t, max = 40) {
+  return t.length > max ? t.slice(0, max) + '...' : t;
+}
+
+// ── Keyboard ───────────────────────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+    prevPage();
+    e.preventDefault();
+  } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+    nextPage();
+    e.preventDefault();
+  } else if (e.key === 'f' || e.key === 'F') {
+    if (!document.fullscreenElement) {
+      document.body.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+    e.preventDefault();
+  }
+});
+
+// Click left/right half of the screen
+document.addEventListener('click', (e) => {
+  const x = e.clientX;
+  const w = window.innerWidth;
+  if (x < w * 0.35) {
+    prevPage();
+  } else if (x > w * 0.65) {
+    nextPage();
+  }
+});
+
+// Touch support
+let touchStartX = 0;
+document.addEventListener('touchstart', (e) => {
+  touchStartX = e.changedTouches[0].screenX;
+});
+document.addEventListener('touchend', (e) => {
+  const diff = touchStartX - e.changedTouches[0].screenX;
+  if (Math.abs(diff) > 50) {
+    if (diff > 0) nextPage();
+    else prevPage();
+  }
+});
+
+// Toggle top bar on hover
+let barTimer = null;
+document.getElementById('readerContainer').addEventListener('mousemove', () => {
+  document.getElementById('topBar').classList.add('show');
+  clearTimeout(barTimer);
+  barTimer = setTimeout(() => {
+    document.getElementById('topBar').classList.remove('show');
+  }, 2000);
+});
+</script>
+
+</body>
+</html>

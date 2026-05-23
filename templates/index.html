@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>漫画阅读器 - 搜索阅读</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="container">
+  <header class="hero">
+    <h1>漫画阅读器</h1>
+    <p class="subtitle">搜索漫画名，多源切换，纯净阅读</p>
+  </header>
+
+  <div class="input-card">
+    <div class="input-group">
+      <input type="text" id="searchInput" placeholder="输入漫画名称，例如 海贼王、一拳超人..." autofocus>
+      <button id="searchBtn" onclick="doSearch()">搜索</button>
+    </div>
+    <div class="source-tags">
+      <span class="source-tag mz">mangabz</span>
+      <span class="source-tag bz">baozimh</span>
+      <span class="source-tag mc">mangacopy</span>
+      <span class="source-tag mr">manhuaren</span>
+      <span class="source-tag d5">dm5</span>
+      <span class="hint">五源聚合搜索，按相关度排序，点击结果可切换线路</span>
+    </div>
+  </div>
+
+  <!-- Quick URL input (collapsible) -->
+  <details class="url-section">
+    <summary>或直接粘贴章节网址</summary>
+    <div class="input-card" style="margin-top:0.5rem">
+      <div class="input-group">
+        <input type="url" id="urlInput" placeholder="粘贴漫画章节网址">
+        <button onclick="loadUrl()">打开</button>
+      </div>
+    </div>
+  </details>
+
+  <div id="loading" class="loading hidden">
+    <div class="spinner"></div>
+    <p>正在搜索...</p>
+  </div>
+
+  <div id="error" class="error-card hidden"></div>
+</div>
+
+<script>
+function doSearch() {
+  const q = document.getElementById('searchInput').value.trim();
+  if (!q) return;
+  sessionStorage.setItem('searchKeyword', q);
+  window.location.href = '/catalog?q=' + encodeURIComponent(q);
+}
+
+async function loadUrl() {
+  const url = document.getElementById('urlInput').value.trim();
+  if (!url) return;
+  const loading = document.getElementById('loading');
+  const error = document.getElementById('error');
+  loading.classList.remove('hidden');
+  error.classList.add('hidden');
+  try {
+    const resp = await fetch('/fetch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url}),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      error.textContent = data.error;
+      error.classList.remove('hidden');
+      loading.classList.add('hidden');
+      return;
+    }
+    sessionStorage.setItem('comicData', JSON.stringify(data));
+    window.location.href = '/reader';
+  } catch (e) {
+    error.textContent = '请求失败';
+    error.classList.remove('hidden');
+    loading.classList.add('hidden');
+  }
+}
+
+document.getElementById('searchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doSearch();
+});
+</script>
+
+</body>
+</html>
